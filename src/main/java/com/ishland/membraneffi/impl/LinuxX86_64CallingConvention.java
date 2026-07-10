@@ -113,4 +113,29 @@ public class LinuxX86_64CallingConvention implements CallingConventionAdapter {
         throw new AssertionError(String.format("Unexpected result type: %s", result.getClass().getName()));
     }
 
+    @Override
+    public int emitNMethodBarrier(ByteArrayOutputStream out) {
+        // 4-byte alignment required for atomic patching of disp8/imm32.
+        int pos = out.size();
+        while ((pos & 3) != 0) {
+            out.write(0x90); // nop
+            pos++;
+        }
+        // cmp dword ptr [r15 + 0], 0x00000000   (8 bytes)
+        //   41         REX.B (extends r/m to r15)
+        //   81 /7      cmp r/m32, imm32  (opcode-extension /7 = CMP)
+        //   7F         ModR/M  mod=01, reg=/7, rm=111 -> [r15+disp8]
+        //   00         disp8   (HotSpot patches this to threadDisarmedOffset)
+        //   00 00 00 00 imm32  (HotSpot patches this to the armed-epoch value)
+        out.write(0x41);
+        out.write(0x81);
+        out.write(0x7F);
+        out.write(0x00);
+        out.write(0);
+        out.write(0);
+        out.write(0);
+        out.write(0);
+        return pos;
+    }
+
 }

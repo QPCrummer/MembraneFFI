@@ -12,6 +12,19 @@ public interface CallingConventionAdapter {
 
     void emit(ByteArrayOutputStream out, Argument[] arguments, Class<?> returnType, long address, boolean isVarargCall);
 
+    /**
+     * Emit the "no-op" nmethod entry barrier required by JVMCI since JDK 21.
+     * Loom / JEP 444 made {@code BarrierSetNMethod} mandatory for every GC,
+     * so {@code CompilerToVM.installCode0} now rejects any nmethod missing
+     * a Mark with id {@code CodeInstaller::ENTRY_BARRIER_PATCH}.
+     * <p>
+     * The barrier is emitted AFTER the actual code, so the CPU never executes
+     * it; it exists solely to satisfy JVMCI validation.
+     *
+     * @return offset within the output stream where the barrier begins
+     */
+    int emitNMethodBarrier(ByteArrayOutputStream out);
+
     public static CallingConventionAdapter get() {
         final Class<?> override = CallingConventionOverride.getCallingConventionOverride();
         if (override != null) {

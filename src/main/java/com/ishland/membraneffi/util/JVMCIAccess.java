@@ -37,8 +37,21 @@ public class JVMCIAccess {
     public static final Class<?> clazz_AllocatableValue;
     public static final Class<?> clazz_RegisterValue;
     public static final Class<?> clazz_Register;
+    public static final Class<?> clazz_Mark;
+    public static final Class<?> clazz_HotSpotJVMCIRuntime;
+    public static final Class<?> clazz_ConfigStore;
+    public static final Class<?> clazz_HotSpotVMConfigAccess;
+
+    // JDK 21+ barrier mark IDs (null on pre-JDK-21 where they don't exist)
+    private static final Integer MARK_FRAME_COMPLETE;
+    private static final Integer MARK_ENTRY_BARRIER_PATCH;
 
     private static final MethodHandle method_JVMCI_getRuntime;
+    private static final MethodHandle method_HotSpotJVMCIRuntime_runtime;
+    private static final MethodHandle method_HotSpotJVMCIRuntime_getConfigStore;
+    private static final MethodHandle constructor_HotSpotVMConfigAccess;
+    private static final MethodHandle method_HotSpotVMConfigAccess_getConstant;
+    private static final MethodHandle constructor_Mark;
     private static final MethodHandle method_JVMCIRuntime_getHostJVMCIBackend;
     private static final MethodHandle method_JVMCIBackend_getMetaAccessProvider;
     private static final MethodHandle method_JVMCIBackend_getTarget;
@@ -102,6 +115,19 @@ public class JVMCIAccess {
             clazz_AllocatableValue = Class.forName("jdk.vm.ci.meta.AllocatableValue");
             clazz_RegisterValue = Class.forName("jdk.vm.ci.code.RegisterValue");
             clazz_Register = Class.forName("jdk.vm.ci.code.Register");
+            clazz_Mark = Class.forName("jdk.vm.ci.code.site.Mark");
+            clazz_HotSpotJVMCIRuntime = Class.forName("jdk.vm.ci.hotspot.HotSpotJVMCIRuntime");
+            clazz_ConfigStore = findClass("jdk.vm.ci.hotspot.HotSpotVMConfigStore", "jdk.vm.ci.hotspot.ConfigStore");
+            clazz_HotSpotVMConfigAccess = Class.forName("jdk.vm.ci.hotspot.HotSpotVMConfigAccess");
+
+            method_HotSpotJVMCIRuntime_runtime = MethodHandles.lookup().findStatic(clazz_HotSpotJVMCIRuntime, "runtime", MethodType.methodType(clazz_HotSpotJVMCIRuntime));
+            method_HotSpotJVMCIRuntime_getConfigStore = MethodHandles.lookup().findVirtual(clazz_HotSpotJVMCIRuntime, "getConfigStore", MethodType.methodType(clazz_ConfigStore));
+            constructor_HotSpotVMConfigAccess = MethodHandles.lookup().findConstructor(clazz_HotSpotVMConfigAccess, MethodType.methodType(void.class, clazz_ConfigStore));
+            method_HotSpotVMConfigAccess_getConstant = MethodHandles.lookup().findVirtual(clazz_HotSpotVMConfigAccess, "getConstant", MethodType.methodType(Object.class, String.class, Class.class));
+            constructor_Mark = findMarkConstructor(clazz_Mark);
+
+            MARK_FRAME_COMPLETE = lookupMarkId("CodeInstaller::FRAME_COMPLETE");
+            MARK_ENTRY_BARRIER_PATCH = lookupMarkId("CodeInstaller::ENTRY_BARRIER_PATCH");
 
             method_JVMCI_getRuntime = MethodHandles.lookup().findStatic(clazz_JVMCI, "getRuntime", MethodType.methodType(clazz_JVMCIRuntime));
             method_JVMCIRuntime_getHostJVMCIBackend = MethodHandles.lookup().findVirtual(clazz_JVMCIRuntime, "getHostJVMCIBackend", MethodType.methodType(clazz_JVMCIBackend));
@@ -366,6 +392,76 @@ public class JVMCIAccess {
     public static Object targetDescription$arch$get(Object target) {
         try {
             return getter_TargetDescription_arch_get.invoke(target);
+        } catch (Throwable e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // --- JDK 21+ barrier support ---
+
+    private static Class<?> findClass(String... names) throws ClassNotFoundException {
+        for (String name : names) {
+            try {
+                return Class.forName(name);
+            } catch (ClassNotFoundException ignored) {}
+        }
+        throw new ClassNotFoundException("None of: " + java.util.Arrays.toString(names));
+    }
+
+    // Try (int, Object) first (Java 21+), then (int, int) (pre-21)
+    private static MethodHandle findMarkConstructor(Class<?> markClass) {
+        try {
+            return MethodHandles.lookup().findConstructor(markClass, MethodType.methodType(void.class, int.class, Object.class));
+        } catch (Throwable ignored) {}
+        try {
+            return MethodHandles.lookup().findConstructor(markClass, MethodType.methodType(void.class, int.class, int.class));
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private static Integer lookupMarkId(String name) {
+        try {
+            // method handles may not be initialized yet when called from static block,
+            // so fall back to raw reflection
+            Object hotSpotRuntime = method_HotSpotJVMCIRuntime_runtime != null
+                    ? method_HotSpotJVMCIRuntime_runtime.invoke()
+                    : clazz_HotSpotJVMCIRuntime.getMethod("runtime").invoke(null);
+            Object configStore = method_HotSpotJVMCIRuntime_getConfigStore != null
+                    ? method_HotSpotJVMCIRuntime_getConfigStore.invoke(hotSpotRuntime)
+                    : clazz_HotSpotJVMCIRuntime.getMethod("getConfigStore").invoke(hotSpotRuntime);
+            Object configAccess = constructor_HotSpotVMConfigAccess != null
+                    ? constructor_HotSpotVMConfigAccess.invoke(configStore)
+                    : clazz_HotSpotVMConfigAccess.getConstructor(clazz_ConfigStore).newInstance(configStore);
+            Object value = method_HotSpotVMConfigAccess_getConstant != null
+                    ? method_HotSpotVMConfigAccess_getConstant.invoke(configAccess, name, Integer.class)
+                    : clazz_HotSpotVMConfigAccess.getMethod("getConstant", String.class, Class.class)
+                            .invoke(configAccess, name, Integer.class);
+            return (Integer) value;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * Return the FRAME_COMPLETE mark ID, or null if running on pre-JDK-21.
+     */
+    public static Integer markId$FRAME_COMPLETE() {
+        return MARK_FRAME_COMPLETE;
+    }
+
+    /**
+     * Return the ENTRY_BARRIER_PATCH mark ID, or null if running on pre-JDK-21.
+     */
+    public static Integer markId$ENTRY_BARRIER_PATCH() {
+        return MARK_ENTRY_BARRIER_PATCH;
+    }
+
+    /**
+     * Create a new {@code Mark(offset, markId)} instance.
+     */
+    public static Object mark$constructor(int offset, int markId) {
+        try {
+            return constructor_Mark.invoke(offset, markId);
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }

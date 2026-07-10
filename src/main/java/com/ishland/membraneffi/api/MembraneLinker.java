@@ -5,7 +5,9 @@ import com.ishland.membraneffi.api.annotations.InstallMachineCode;
 import com.ishland.membraneffi.api.annotations.Link;
 import com.ishland.membraneffi.api.annotations.OsArchPair;
 import com.ishland.membraneffi.api.annotations.VarargCall;
+import com.ishland.membraneffi.util.JavaInternals;
 import com.ishland.membraneffi.util.JVMCIUtils;
+import com.ishland.membraneffi.util.ModuleOpener;
 
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
@@ -15,8 +17,40 @@ import java.util.Arrays;
 
 public class MembraneLinker {
 
+    // Open jdk.internal.vm.ci/jdk.vm.ci.* to our unnamed module BEFORE any
+    // jdk.vm.ci.* type is first resolved by the JVM.
+    static {
+        ModuleOpener.openJvmci();
+    }
+
     static {
         System.loadLibrary("java");
+    }
+
+    // JDK 21+ requires every installed nmethod to carry an entry barrier.
+    // The barrier bytes are emitted by the calling convention adapter and
+    // appended after the actual code. We record the offset so installCode
+    // can create the required Mark sites.
+    private static final CallingConventionAdapter callingConvention = CallingConventionAdapter.get();
+
+    // ClassLoader.findNative signature evolved across JDK versions:
+    //   JDK <= 21:  static long findNative(ClassLoader, String)
+    //   JDK >= 22:  static long findNative(ClassLoader, Class<?>, String, String)
+    // We resolve once at class init, then dispatch on parameter count.
+    private static final Method FIND_NATIVE = resolveFindNative();
+
+    private static Method resolveFindNative() {
+        try {
+            return JavaInternals.getPrivateMethod(ClassLoader.class, "findNative",
+                    ClassLoader.class, Class.class, String.class, String.class);
+        } catch (RuntimeException e1) {
+            try {
+                return JavaInternals.getPrivateMethod(ClassLoader.class, "findNative",
+                        ClassLoader.class, String.class);
+            } catch (RuntimeException e2) {
+                throw new IllegalStateException("Cannot resolve ClassLoader.findNative", e2);
+            }
+        }
     }
 
     public static void linkClass(Class<?> clazz) {
@@ -82,7 +116,18 @@ public class MembraneLinker {
     }
 
     public static void installMachineCode0(Method method, byte[] code) {
-        JVMCIUtils.installCode(method, code, code.length);
+        // Append barrier bytes after the user-supplied machine code
+        ByteArrayOutputStream out = new ByteArrayOutputStream(code.length + 32);
+        // ByteArrayOutputStream never actually throws IOException, but the
+        // inherited signature declares it (from OutputStream.write(byte[])).
+        try {
+            out.write(code);
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+        int barrierOffset = callingConvention.emitNMethodBarrier(out);
+        byte[] full = out.toByteArray();
+        JVMCIUtils.installCode(method, full, full.length, barrierOffset);
     }
 
     public static void linkMethod0(Method method, String symbol, boolean isVarargCall) {
@@ -98,22 +143,29 @@ public class MembraneLinker {
             throw new NullPointerException();
         }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        final CallingConventionAdapter adapter = CallingConventionAdapter.get();
         Parameter[] parameters = method.getParameters();
         CallingConventionAdapter.Argument[] arguments = new CallingConventionAdapter.Argument[parameters.length];
         for (int i = 0; i < parameters.length; i++) {
             arguments[i] = new CallingConventionAdapter.Argument(i, parameters[i].getType(), parameters[i].getAnnotations());
         }
-        adapter.emit(out, arguments, method.getReturnType(), address, isVarargCall);
+        callingConvention.emit(out, arguments, method.getReturnType(), address, isVarargCall);
 
-        installMachineCode0(method, out.toByteArray());
+        // Emit the entry barrier required by JVMCI since JDK 21
+        int barrierOffset = callingConvention.emitNMethodBarrier(out);
+        byte[] full = out.toByteArray();
+        JVMCIUtils.installCode(method, full, full.length, barrierOffset);
     }
 
     private static long findAddress(String symbol) {
+        ClassLoader cl = MembraneLinker.class.getClassLoader();
         try {
-            Method m = ClassLoader.class.getDeclaredMethod("findNative", ClassLoader.class, String.class);
-            m.setAccessible(true);
-            return (long) m.invoke(null, MembraneLinker.class.getClassLoader(), symbol);
+            if (FIND_NATIVE.getParameterCount() == 4) {
+                // JDK 22+: (loader, caller, entryName, javaName).
+                // entryName is the symbol passed to dlsym; javaName is for diagnostics.
+                return (long) FIND_NATIVE.invoke(null, cl, MembraneLinker.class, symbol, symbol);
+            } else {
+                return (long) FIND_NATIVE.invoke(null, cl, symbol);
+            }
         } catch (ReflectiveOperationException e) {
             throw new RuntimeException(String.format("Failed to locate symbol %s", symbol), e);
         }

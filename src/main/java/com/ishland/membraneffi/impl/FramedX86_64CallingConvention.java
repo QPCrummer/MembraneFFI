@@ -175,4 +175,24 @@ public class FramedX86_64CallingConvention implements CallingConventionAdapter {
         }
     }
 
+    @Override
+    public int emitNMethodBarrier(ByteArrayOutputStream out) {
+        // Same barrier as Linux x86_64 — the barrier opcode is OS-agnostic.
+        int pos = out.size();
+        while ((pos & 3) != 0) {
+            out.write(0x90); // nop
+            pos++;
+        }
+        // cmp dword ptr [r15 + 0], 0x00000000   (8 bytes)
+        out.write(0x41);
+        out.write(0x81);
+        out.write(0x7F);
+        out.write(0x00);
+        out.write(0);
+        out.write(0);
+        out.write(0);
+        out.write(0);
+        return pos;
+    }
+
 }
