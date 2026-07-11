@@ -1,0 +1,13 @@
+{
+    "schemaVersion": 1,
+    "id": "nalim",
+    "version": "1.0-SNAPSHOT",
+    "name": "MembraneFFI (patched)",
+    "description": "Near-zero-overhead JVMCI-based JNI replacement, patched to add the JDK 21+ nmethod entry barrier and to auto-open jdk.internal.vm.ci packages at runtime.",
+    "authors": ["Ishland", "QPCrummer"],
+    "license": "MIT",
+    "environment": "*",
+    "depends": {
+        "java": ">=11"
+    }
+}

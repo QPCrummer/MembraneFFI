@@ -1,12 +1,11 @@
 plugins {
     id 'java'
+    id("com.gradleup.shadow") version "9.5.1"
     id 'maven-publish'
 }
 
 group = 'com.ishland'
 version = '1.0-SNAPSHOT'
-
-sourceCompatibility = targetCompatibility = JavaVersion.VERSION_11
 
 repositories {
     mavenCentral()
@@ -14,11 +13,35 @@ repositories {
 
 dependencies {
     implementation 'io.github.icedland.iced:iced-x86:1.18.0'
-    implementation 'org.ow2.asm:asm:9.5'
+    // Most mod loaders bundle this
+    compileOnly 'org.ow2.asm:asm:9.5'
 
     testImplementation platform('org.junit:junit-bom:5.9.1')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testImplementation 'net.bytebuddy:byte-buddy-agent:1.14.0'
+}
+
+def targetJavaVersion = 17
+tasks.withType(JavaCompile).configureEach {
+    // ensure that the encoding is set to UTF-8, no matter what the system default is
+    // this fixes some edge cases with special characters not displaying correctly
+    // see http://yodaconditions.net/blog/fix-for-java-file-encoding-problems-with-gradle.html
+    // If Javadoc is generated, this must be specified in that task too.
+    it.options.encoding = "UTF-8"
+    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible()) {
+        it.options.release.set(targetJavaVersion)
+    }
+}
+
+java {
+    def javaVersion = JavaVersion.toVersion(targetJavaVersion)
+    if (JavaVersion.current() < javaVersion) {
+        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+    }
+    // Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
+    // if it is present.
+    // If you remove this line, sources will not be generated.
+    withSourcesJar()
 }
 
 test {
@@ -31,15 +54,6 @@ test {
     jvmArgs "-XX:+UnlockExperimentalVMOptions", "-XX:+EnableJVMCI", "-XX:+UnlockDiagnosticVMOptions", "-XX:PrintAssemblyOptions=intel", "-XX:CompileCommand=print,com.ishland.membraneffi.test.*::*"
 }
 
-tasks.withType(JavaCompile) {
-    options.compilerArgs << '--add-modules' << 'jdk.internal.vm.ci'
-    options.compilerArgs << '--add-exports' << 'jdk.internal.vm.ci/jdk.vm.ci.code=ALL-UNNAMED'
-    options.compilerArgs << '--add-exports' << 'jdk.internal.vm.ci/jdk.vm.ci.code.site=ALL-UNNAMED'
-    options.compilerArgs << '--add-exports' << 'jdk.internal.vm.ci/jdk.vm.ci.hotspot=ALL-UNNAMED'
-    options.compilerArgs << '--add-exports' << 'jdk.internal.vm.ci/jdk.vm.ci.meta=ALL-UNNAMED'
-    options.compilerArgs << '--add-exports' << 'jdk.internal.vm.ci/jdk.vm.ci.runtime=ALL-UNNAMED'
-}
-
 test {
     useJUnitPlatform()
 }
@@ -50,4 +64,8 @@ publishing {
             from components.java
         }
     }
+}
+
+shadowJar {
+    archiveFileName.set("membrane.jar")
 }
