@@ -81,12 +81,6 @@ public class MembraneLinker {
             for (InstallMachineCode.Entry entry : installMachineCode.value()) {
                 for (OsArchPair pair : entry.targets()) {
                     if (pair.arch() == architecture && pair.os() == operatingSystem) {
-                        if (Modifier.isSynchronized(method.getModifiers())) {
-                            // Installing a raw nmethod bypasses HotSpot's synchronized-native
-                            // wrapper, so accepting this modifier would silently drop locking.
-                            throw new IllegalArgumentException(
-                                    "Synchronized native methods are not supported: " + method);
-                        }
                         installMachineCode0(method, parseHexString(entry.code()));
                         return;
                     }
@@ -118,12 +112,6 @@ public class MembraneLinker {
             return;
         }
 
-        if (Modifier.isSynchronized(method.getModifiers())) {
-            // Installing a raw nmethod bypasses HotSpot's synchronized-native
-            // wrapper, so accepting this modifier would silently drop locking.
-            throw new IllegalArgumentException(
-                    "Synchronized native methods are not supported: " + method);
-        }
         linkMethod0(method, address, isVarargCall);
     }
 

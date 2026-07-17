@@ -66,43 +66,4 @@ public final class ModuleOpener {
             throw new IllegalStateException("Failed to open JVMCI packages reflectively", e);
         }
     }
-
-    /**
-     * Reflectively call {@code Module.implAddOpens(String, Module)} on any
-     * module + package. Performs the same Unsafe-bypass of the
-     * {@code setAccessible} check used by {@link #openJvmci()}, so callers
-     * do NOT need {@code --add-opens java.base/java.lang=ALL-UNNAMED}.
-     * <p>
-     * Usage example — open {@code java.nio} so callers can read
-     * {@code Buffer.address} via reflection without a JVM flag:
-     * <pre>
-     * ModuleOpener.opensPackage("java.base", "java.nio");
-     * </pre>
-     * <p>
-     * Idempotent — repeat calls are cheap.
-     */
-    public static void opensPackage(String moduleName, String packageName) {
-        Module target = ModuleLayer.boot().findModule(moduleName)
-                .orElseThrow(() -> new IllegalStateException("Module not found: " + moduleName));
-        try {
-            Method addOpens = Module.class.getDeclaredMethod(
-                    "implAddOpens", String.class, Module.class);
-            JavaInternals.setAccessible(addOpens);
-
-            Module system   = ClassLoader.getSystemClassLoader().getUnnamedModule();
-            Module platform = ClassLoader.getPlatformClassLoader().getUnnamedModule();
-            Module here     = ModuleOpener.class.getModule();
-
-            addOpens.invoke(target, packageName, system);
-            if (platform != system) addOpens.invoke(target, packageName, platform);
-            if (here != system && here != platform) {
-                addOpens.invoke(target, packageName, here);
-            }
-        } catch (ReflectiveOperationException e) {
-            throw new IllegalStateException(
-                    "Failed to open " + moduleName + "/" + packageName + " reflectively. " +
-                    "Fallback: pass --add-opens " + moduleName + "/" + packageName + "=ALL-UNNAMED " +
-                    "on the launch line.", e);
-        }
-    }
 }

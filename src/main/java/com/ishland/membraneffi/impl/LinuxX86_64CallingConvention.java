@@ -18,15 +18,7 @@ public class LinuxX86_64CallingConvention implements CallingConventionAdapter {
     public void emit(ByteArrayOutputStream out, Argument[] arguments, Class<?> returnType, long address, boolean isVarargCall) {
         CodeAssembler as = new CodeAssembler(64);
 
-        // Only integer-type arguments consume integer registers (rdi, rsi, rdx, rcx, r8, r9).
-        // Float/double arguments use XMM registers and do NOT cause the 6th-arg clash.
-        int integerArgCount = 0;
-        for (Argument arg : arguments) {
-            if (!arg.type().isPrimitive() || (arg.type() != float.class && arg.type() != double.class)) {
-                integerArgCount++;
-            }
-        }
-        if (integerArgCount >= 6) {
+        if (arguments.length >= 6) {
             // 6th Java argument clashes with the 1st native arg
             as.mov(AsmRegisters.rax, AsmRegisters.rdi);
         }
