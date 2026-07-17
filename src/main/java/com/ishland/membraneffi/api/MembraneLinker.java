@@ -142,6 +142,12 @@ public class MembraneLinker {
         if (address == 0) {
             throw new NullPointerException();
         }
+        if (Modifier.isSynchronized(method.getModifiers())) {
+            // Installing a raw nmethod bypasses HotSpot's synchronized-native
+            // wrapper, so accepting this modifier would silently drop locking.
+            throw new IllegalArgumentException(
+                    "Synchronized native methods are not supported: " + method);
+        }
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         Parameter[] parameters = method.getParameters();
         CallingConventionAdapter.Argument[] arguments = new CallingConventionAdapter.Argument[parameters.length];

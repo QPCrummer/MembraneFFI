@@ -149,6 +149,12 @@ public class FramedX86_64CallingConvention implements CallingConventionAdapter {
         as.mov(AsmRegisters.rax, address);
         as.call(AsmRegisters.rax);
 
+        // The C ABIs leave bits above AL/AX undefined for sub-int returns;
+        // compiled Java consumes full EAX. Normalize before returning.
+        if (CallingConventionAdapter.needsReturnNormalization(returnType)) {
+            CallingConventionAdapter.emitNarrowReturnNormalization(as, returnType);
+        }
+
         as.add(AsmRegisters.rsp, currentFrameSize);
         as.pop(AsmRegisters.rbp);
         as.pop(AsmRegisters.rbp); // for alignment

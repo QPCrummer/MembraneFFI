@@ -16,9 +16,30 @@ public class LinuxX86_64CallingConvention implements CallingConventionAdapter {
 
     @Override
     public void emit(ByteArrayOutputStream out, Argument[] arguments, Class<?> returnType, long address, boolean isVarargCall) {
+        // Narrow returns (boolean/byte/short/char) need a sign/zero extension
+        // AFTER the native function returns, which a tail jump cannot provide.
+        // Register-only signatures get a real-call bridge below; signatures
+        // with native stack arguments would see their [rsp]-relative slots
+        // shifted by that bridge, so they take the Framed convention, which
+        // rebuilds the frame generically and normalizes after its call.
+        boolean normalizeReturn = CallingConventionAdapter.needsReturnNormalization(returnType);
+        if (normalizeReturn && needsNativeStackArguments(arguments)) {
+            new FramedX86_64CallingConvention().emit(out, arguments, returnType, address, isVarargCall);
+            return;
+        }
+
         CodeAssembler as = new CodeAssembler(64);
 
-        if (arguments.length >= 6) {
+        // Only integer-class arguments consume the integer registers
+        // (rdi, rsi, rdx, rcx, r8, r9); float/double live in XMM registers
+        // and cannot cause the 6th-argument clash.
+        int integerArgCount = 0;
+        for (Argument arg : arguments) {
+            if (!arg.type().isPrimitive() || (arg.type() != float.class && arg.type() != double.class)) {
+                integerArgCount++;
+            }
+        }
+        if (integerArgCount >= 6) {
             // 6th Java argument clashes with the 1st native arg
             as.mov(AsmRegisters.rax, AsmRegisters.rdi);
         }
@@ -98,19 +119,67 @@ public class LinuxX86_64CallingConvention implements CallingConventionAdapter {
         if (isVarargCall)
             as.mov(AsmRegisters.al, Math.min(xmmArgIndex, 8));
 
-        as.mov(AsmRegisters.rax, address);
-        as.jmp(AsmRegisters.rax);
+        // The argument shuffle is position-independent, so it can be assembled
+        // on its own and the call/jump/inline tail decided afterwards.
+        byte[] shuffle = assembleToBytes(as);
 
-        final Object result = as.assemble(out::write, 0);
+        // Auto-inline: when the target is a small verified leaf, copy its body
+        // directly into the nmethod after the shuffle instead of tail-jumping
+        // to it (see SmallFunctionInliner). Narrow returns are normalized in
+        // place at the function's single terminal ret; ineligible functions
+        // fall back to the stub paths below.
+        java.nio.ByteBuffer inlineBuf = java.nio.ByteBuffer.allocate(1024)
+                .order(java.nio.ByteOrder.nativeOrder());
+        inlineBuf.put(shuffle, 0, shuffle.length);
+        if (SmallFunctionInliner.tryInline(inlineBuf, address, "0x" + Long.toHexString(address), returnType)) {
+            out.write(inlineBuf.array(), 0, inlineBuf.position());
+            return;
+        }
+
+        out.write(shuffle, 0, shuffle.length);
+        CodeAssembler tail = new CodeAssembler(64);
+        if (normalizeReturn) {
+            // Real-call bridge: the nmethod is entered with RSP%16 == 8, so
+            // reserve one slot to give the System V callee its required
+            // 16-byte-aligned call site, then extend AL/AX to a canonical EAX.
+            tail.sub(AsmRegisters.rsp, 8);
+            tail.mov(AsmRegisters.rax, address);
+            tail.call(AsmRegisters.rax);
+            tail.add(AsmRegisters.rsp, 8);
+            CallingConventionAdapter.emitNarrowReturnNormalization(tail, returnType);
+            tail.ret();
+        } else {
+            tail.mov(AsmRegisters.rax, address);
+            tail.jmp(AsmRegisters.rax);
+        }
+        byte[] tailBytes = assembleToBytes(tail);
+        out.write(tailBytes, 0, tailBytes.length);
+    }
+
+    private static byte[] assembleToBytes(CodeAssembler as) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        final Object result = as.assemble(bytes::write, 0);
         if (result instanceof String) {
             String error = (String) result;
             throw new RuntimeException(error);
         } else if (result instanceof CodeAssemblerResult) {
-            CodeAssemblerResult assemblerResult = (CodeAssemblerResult) result;
-            return;
+            return bytes.toByteArray();
         }
-
         throw new AssertionError(String.format("Unexpected result type: %s", result.getClass().getName()));
+    }
+
+    private static boolean needsNativeStackArguments(Argument[] arguments) {
+        int integerArgs = 0;
+        int xmmArgs = 0;
+        for (Argument arg : arguments) {
+            if (arg.type().isPrimitive()
+                    && (arg.type() == float.class || arg.type() == double.class)) {
+                xmmArgs++;
+            } else {
+                integerArgs++;
+            }
+        }
+        return integerArgs > 6 || xmmArgs > 8;
     }
 
     @Override
