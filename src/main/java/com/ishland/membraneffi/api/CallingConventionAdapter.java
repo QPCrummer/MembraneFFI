@@ -1,5 +1,7 @@
 package com.ishland.membraneffi.api;
 
+import com.github.icedland.iced.x86.asm.AsmRegisters;
+import com.github.icedland.iced.x86.asm.CodeAssembler;
 import com.ishland.membraneffi.util.CallingConventionOverride;
 
 import java.io.ByteArrayOutputStream;
@@ -11,6 +13,39 @@ import java.util.Objects;
 public interface CallingConventionAdapter {
 
     void emit(ByteArrayOutputStream out, Argument[] arguments, Class<?> returnType, long address, boolean isVarargCall);
+
+    /**
+     * Whether {@code returnType} needs sign/zero extension before control
+     * returns to compiled Java. The System V and Win64 ABIs only define
+     * AL/AX for sub-int return values — everything above may be garbage —
+     * while HotSpot's Java calling convention expects the callee to hand
+     * back a full, canonical EAX (booleans strictly 0/1). Returning the raw
+     * native register produces corrupted booleans/bytes/shorts/chars,
+     * including "true" values that fail {@code == true}.
+     */
+    static boolean needsReturnNormalization(Class<?> returnType) {
+        return returnType == boolean.class || returnType == byte.class
+                || returnType == short.class || returnType == char.class;
+    }
+
+    /**
+     * Emit the extension that converts a System V narrow return value in
+     * AL/AX into the canonical Java EAX form. Must run after the native call
+     * returns and before control goes back to compiled Java.
+     */
+    static void emitNarrowReturnNormalization(CodeAssembler as, Class<?> returnType) {
+        if (returnType == boolean.class) {
+            as.movzx(AsmRegisters.eax, AsmRegisters.al);
+        } else if (returnType == byte.class) {
+            as.movsx(AsmRegisters.eax, AsmRegisters.al);
+        } else if (returnType == short.class) {
+            as.movsx(AsmRegisters.eax, AsmRegisters.ax);
+        } else if (returnType == char.class) {
+            as.movzx(AsmRegisters.eax, AsmRegisters.ax);
+        } else {
+            throw new IllegalArgumentException("Not a narrow return type: " + returnType);
+        }
+    }
 
     /**
      * Emit the "no-op" nmethod entry barrier required by JVMCI since JDK 21.

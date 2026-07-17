@@ -443,6 +443,25 @@ public class JVMCIAccess {
     }
 
     /**
+     * Alignment of installed nmethod entries (the {@code CodeEntryAlignment}
+     * VM flag; 32 by default on AMD64). Limits how strongly a literal in the
+     * inline pool can be aligned. Falls back to the conservative 16 when the
+     * flag cannot be read.
+     */
+    public static int codeEntryAlignment() {
+        try {
+            Object hotSpotRuntime = clazz_HotSpotJVMCIRuntime.getMethod("runtime").invoke(null);
+            Object configStore = clazz_HotSpotJVMCIRuntime.getMethod("getConfigStore").invoke(hotSpotRuntime);
+            Object configAccess = clazz_HotSpotVMConfigAccess.getConstructor(clazz_ConfigStore).newInstance(configStore);
+            Object value = clazz_HotSpotVMConfigAccess.getMethod("getFlag", String.class, Class.class)
+                    .invoke(configAccess, "CodeEntryAlignment", Integer.class);
+            return (Integer) value;
+        } catch (Throwable t) {
+            return 16;
+        }
+    }
+
+    /**
      * Return the FRAME_COMPLETE mark ID, or null if running on pre-JDK-21.
      */
     public static Integer markId$FRAME_COMPLETE() {
